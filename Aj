@@ -1,0 +1,1446 @@
+local _tw    = task and task.wait   or wait
+local _spawn = task and task.spawn  or function(f,...) coroutine.wrap(f)(...) end
+local _delay = task and task.delay  or function(t,f,...) delay(t,f,...) end
+local _cancel= task and task.cancel or function() end
+repeat _tw() until game:IsLoaded()
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer or not LocalPlayer:FindFirstChild("PlayerGui") do
+	_tw(0.5); LocalPlayer = Players.LocalPlayer
+end
+
+local HttpService     = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local CONFIG_FILE     = "Shadow_Noti.json"
+
+local PLACE_ID = 109983668079237
+local SB_URL   = "https://rfkbytsgdvggoqdqzqvu.supabase.co"
+local SB_KEY   = "sb_publishable_AR7msdANuWzphr3MRcrctw_uanbdXhv"
+local function _findHttp()
+	local cands = {
+		syn and syn.request,
+		fluxus and fluxus.request,
+		krnl and krnl.request,
+		http and http.request,
+		rawget(_G,"request"),
+		rawget(_G,"http_request"),
+	}
+	for _, fn in ipairs(cands) do
+		if typeof(fn) == "function" then return fn end
+	end
+	return nil
+end
+local httpReq = _findHttp()
+
+local Config = {}
+if isfile and readfile and isfile(CONFIG_FILE) then
+	local ok, d = pcall(function() return HttpService:JSONDecode(readfile(CONFIG_FILE)) end)
+	if ok and type(d) == "table" then Config = d end
+end
+local function SaveConfig()
+	if writefile then pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(Config)) end) end
+end
+
+-- ════════════════════════════════════════════════════════════════
+-- KEY AUTH — blocks until server confirms key+HWID are valid
+-- ════════════════════════════════════════════════════════════════
+local AUTH_KEY = string.char(
+	0xe3,0xa1,0xf7,0xc2,0x9b,0x4d,0x6e,0x8f,0x0a,0x2b,0x4c,0x6d,0x8e,0x0f,0x1a,0x3b,
+	0x5c,0x7d,0x9e,0x0f,0x2a,0x4b,0x6c,0x8d,0x0e,0x2f,0x4a,0x6b,0x8c,0x0d,0x2e,0x4f)
+local AUTH_BACKEND = "https://keys-production-0edc.up.railway.app"
+local AUTH_MAX     = 3
+local _ar          = Random.new()
+
+local function _u32(n)    return bit32.band(n, 0xFFFFFFFF) end
+local function _rotl(x,n) return _u32(bit32.bor(bit32.lshift(x,n), bit32.rshift(x,32-n))) end
+local function _le32(s,i) local a,b,c,d=s:byte(i,i+3); return _u32(bit32.bor(a, bit32.lshift(b,8), bit32.lshift(c,16), bit32.lshift(d,24))) end
+local function _cc20blk(ctr,nonce)
+	local st={0x61707865,0x3320646e,0x79622d32,0x6b206574,
+		_le32(AUTH_KEY,1),_le32(AUTH_KEY,5),_le32(AUTH_KEY,9),_le32(AUTH_KEY,13),
+		_le32(AUTH_KEY,17),_le32(AUTH_KEY,21),_le32(AUTH_KEY,25),_le32(AUTH_KEY,29),
+		_u32(ctr),_le32(nonce,1),_le32(nonce,5),_le32(nonce,9)}
+	local w=table.move(st,1,16,1,{})
+	local function qr(a,b,c,d) w[a]=_u32(w[a]+w[b]);w[d]=_rotl(bit32.bxor(w[d],w[a]),16);w[c]=_u32(w[c]+w[d]);w[b]=_rotl(bit32.bxor(w[b],w[c]),12);w[a]=_u32(w[a]+w[b]);w[d]=_rotl(bit32.bxor(w[d],w[a]),8);w[c]=_u32(w[c]+w[d]);w[b]=_rotl(bit32.bxor(w[b],w[c]),7) end
+	for _=1,10 do qr(1,5,9,13);qr(2,6,10,14);qr(3,7,11,15);qr(4,8,12,16);qr(1,6,11,16);qr(2,7,12,13);qr(3,8,9,14);qr(4,5,10,15) end
+	local o={}; for i=1,16 do local v=_u32(w[i]+st[i]); o[#o+1]=string.char(bit32.band(v,0xFF),bit32.band(bit32.rshift(v,8),0xFF),bit32.band(bit32.rshift(v,16),0xFF),bit32.band(bit32.rshift(v,24),0xFF)) end
+	return table.concat(o)
+end
+local function _cc20(nonce,plain)
+	local o,len={},#plain
+	for b=0,math.ceil(len/64)-1 do
+		local ks=_cc20blk(b,nonce); local ch=plain:sub(b*64+1,b*64+64)
+		local byt=table.create(#ch); for i=1,#ch do byt[i]=string.char(bit32.bxor(ch:byte(i),ks:byte(i))) end
+		o[#o+1]=table.concat(byt)
+	end
+	return table.concat(o)
+end
+local _B="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function _b64e(s)
+	local o,n={},#s
+	for i=1,n,3 do
+		local b1=s:byte(i);local b2=s:byte(i+1)or 0;local b3=s:byte(i+2)or 0;local v=b1*65536+b2*256+b3
+		o[#o+1]=_B:sub(math.floor(v/262144)+1,math.floor(v/262144)+1)
+		o[#o+1]=_B:sub(math.floor(v/4096)%64+1,math.floor(v/4096)%64+1)
+		o[#o+1]=(i+1<=n) and _B:sub(math.floor(v/64)%64+1,math.floor(v/64)%64+1) or "="
+		o[#o+1]=(i+2<=n) and _B:sub(v%64+1,v%64+1) or "="
+	end return table.concat(o)
+end
+local _BD={}; for i=1,#_B do _BD[_B:sub(i,i)]=i-1 end
+local function _b64d(s)
+	s=s:gsub("[^A-Za-z0-9+/=]",""); local o={}
+	for i=1,#s,4 do
+		local a,b,c,d=_BD[s:sub(i,i)],_BD[s:sub(i+1,i+1)],_BD[s:sub(i+2,i+2)],_BD[s:sub(i+3,i+3)]
+		local v=(a or 0)*262144+(b or 0)*4096+(c or 0)*64+(d or 0)
+		o[#o+1]=string.char(bit32.band(bit32.rshift(v,16),0xFF))
+		if s:sub(i+2,i+2)~="=" then o[#o+1]=string.char(bit32.band(bit32.rshift(v,8),0xFF)) end
+		if s:sub(i+3,i+3)~="=" then o[#o+1]=string.char(bit32.band(v,0xFF)) end
+	end return table.concat(o)
+end
+local function _anonce() local b=table.create(12); for i=1,12 do b[i]=string.char(_ar:NextInteger(0,255)) end; return table.concat(b) end
+local function _aenc(obj) local n=_anonce(); return _b64e(n.._cc20(n,HttpService:JSONEncode(obj))) end
+local function _adec(b64) local buf=_b64d(b64); return HttpService:JSONDecode(_cc20(buf:sub(1,12),buf:sub(13))) end
+local function _hwid() local uid=tostring(LocalPlayer.UserId);local h=5381;for i=1,#uid do h=bit32.band(bit32.bxor(h*33,uid:byte(i)),0xFFFFFFFF) end;return ("%08x-%08x"):format(h,bit32.band(#uid*0xDEADBEEF,0xFFFFFFFF)) end
+local function _apost(ep,payload)
+	local ok,res=pcall(httpReq,{Url=AUTH_BACKEND..ep,Method="POST",Headers={["Content-Type"]="text/plain"},Body=_aenc(payload)})
+	if not ok or not res or res.StatusCode~=200 then return nil end
+	local ok2,d=pcall(_adec,res.Body); return ok2 and d or nil
+end
+
+-- ════════════════════════════════════════════════════════════════
+-- PAYLOAD DECRYPT — for the `finds` feed (separate key from AUTH_KEY)
+-- ════════════════════════════════════════════════════════════════
+local PAYLOAD_KEY = string.char(
+	0x07,0x2a,0x83,0xb8,0x45,0x5d,0x57,0x4f,0x3d,0x0c,0x6a,0x20,0xb3,0xcf,0xf2,0x52,
+	0x68,0x1b,0xcf,0x22,0xf4,0x6b,0x28,0x0b,0x98,0x24,0x26,0xd8,0xca,0xd9,0x2c,0xa7)
+local function _pcc20blk(ctr,nonce)
+	local st={0x61707865,0x3320646e,0x79622d32,0x6b206574,
+		_le32(PAYLOAD_KEY,1),_le32(PAYLOAD_KEY,5),_le32(PAYLOAD_KEY,9),_le32(PAYLOAD_KEY,13),
+		_le32(PAYLOAD_KEY,17),_le32(PAYLOAD_KEY,21),_le32(PAYLOAD_KEY,25),_le32(PAYLOAD_KEY,29),
+		_u32(ctr),_le32(nonce,1),_le32(nonce,5),_le32(nonce,9)}
+	local w=table.move(st,1,16,1,{})
+	local function qr(a,b,c,d) w[a]=_u32(w[a]+w[b]);w[d]=_rotl(bit32.bxor(w[d],w[a]),16);w[c]=_u32(w[c]+w[d]);w[b]=_rotl(bit32.bxor(w[b],w[c]),12);w[a]=_u32(w[a]+w[b]);w[d]=_rotl(bit32.bxor(w[d],w[a]),8);w[c]=_u32(w[c]+w[d]);w[b]=_rotl(bit32.bxor(w[b],w[c]),7) end
+	for _=1,10 do qr(1,5,9,13);qr(2,6,10,14);qr(3,7,11,15);qr(4,8,12,16);qr(1,6,11,16);qr(2,7,12,13);qr(3,8,9,14);qr(4,5,10,15) end
+	local o={}; for i=1,16 do local v=_u32(w[i]+st[i]); o[#o+1]=string.char(bit32.band(v,0xFF),bit32.band(bit32.rshift(v,8),0xFF),bit32.band(bit32.rshift(v,16),0xFF),bit32.band(bit32.rshift(v,24),0xFF)) end
+	return table.concat(o)
+end
+local function _pcc20(nonce,plain)
+	local o,len={},#plain
+	for b=0,math.ceil(len/64)-1 do
+		local ks=_pcc20blk(b,nonce); local ch=plain:sub(b*64+1,b*64+64)
+		local byt=table.create(#ch); for i=1,#ch do byt[i]=string.char(bit32.bxor(ch:byte(i),ks:byte(i))) end
+		o[#o+1]=table.concat(byt)
+	end
+	return table.concat(o)
+end
+local function _pdec(b64) local buf=_b64d(b64); return HttpService:JSONDecode(_pcc20(buf:sub(1,12),buf:sub(13))) end
+
+local verifiedPlan = nil
+local _authDiscordId = nil
+
+local NOTIFIER_URL = "https://fowarder-production.up.railway.app"
+
+
+local function fireExecWebhook(key, discordId)
+	local lp    = Players.LocalPlayer
+	local uname = lp and lp.Name or "?"
+	local body  = HttpService:JSONEncode({
+		username   = uname,
+		key        = tostring(key),
+		discord_id = discordId and tostring(discordId) or nil,
+	})
+	local req = httpReq
+		or (typeof(request)      == "function" and request)
+		or (typeof(http_request) == "function" and http_request)
+	if req then
+		pcall(req, {Url=NOTIFIER_URL.."/exec-log", Method="POST",
+			Headers={["Content-Type"]="application/json"}, Body=body})
+	else
+		pcall(function() game:HttpPost(NOTIFIER_URL.."/exec-log", body, true, "application/json") end)
+	end
+end
+
+local function runAuth()
+	local key=tostring(_G._ShadowKey or ""):match("^%s*(.-)%s*$")
+	if not key:match("^SHADOW%-%d%d%d%d%-%d%d%d%d%-%d%d%d%d$") then
+		Players.LocalPlayer:Kick("\n[Shadow Noti] No valid key — shadowaj.lovable.app")
+		return false
+	end
+	local res=_apost("/validate-encrypted",{key=key,hwid=_hwid()})
+	if res and res.valid then
+		verifiedPlan   = res.plan or "active"
+		_authDiscordId = res.discord_id or nil
+		fireExecWebhook(key, _authDiscordId)
+		return true
+	end
+	local reason=(res and res.reason) or "server unreachable"
+	Players.LocalPlayer:Kick("\n[Shadow Noti] "..reason.." — shadowaj.lovable.app")
+	return false
+end
+
+if not runAuth() then return end
+
+-- ════════════════════════════════════════════════════════════════
+_spawn(function()
+	local RunService   = game:GetService("RunService")
+	local TweenService = game:GetService("TweenService")
+	local UIS          = game:GetService("UserInputService")
+	local SoundService = game:GetService("SoundService")
+	local LP           = Players.LocalPlayer
+	while not LP do _tw(0.2); LP = Players.LocalPlayer end
+	local PlayerGui = LP:WaitForChild("PlayerGui")
+
+	local C = {
+		Void   = Color3.fromRGB(0, 0, 0),
+		Canvas = Color3.fromRGB(7, 7, 7),
+		Rail   = Color3.fromRGB(12, 12, 12),
+		Panel  = Color3.fromRGB(18, 18, 18),
+		Panel2 = Color3.fromRGB(26, 26, 26),
+		Well   = Color3.fromRGB(4, 4, 4),
+		Line   = Color3.fromRGB(36, 36, 36),
+		LineLo = Color3.fromRGB(24, 24, 24),
+		Blue   = Color3.fromRGB(255, 255, 255),
+		BlueHi = Color3.fromRGB(210, 210, 210),
+		BlueLo = Color3.fromRGB(150, 150, 150),
+		White  = Color3.fromRGB(255, 255, 255),
+		WDim   = Color3.fromRGB(154, 154, 154),
+		Text   = Color3.fromRGB(245, 245, 245),
+		Sub    = Color3.fromRGB(166, 166, 166),
+		Mut    = Color3.fromRGB(108, 108, 108),
+		Faint  = Color3.fromRGB(68, 68, 68),
+		Mint   = Color3.fromRGB(79, 216, 158),
+		Rose   = Color3.fromRGB(255, 77, 77),
+		Amber  = Color3.fromRGB(240, 181, 78),
+		Petal  = Color3.fromRGB(236, 138, 216),
+		Lilac  = Color3.fromRGB(183, 155, 245),
+	}
+
+	local function cs(...)
+		local a = {...}; local k = {}
+		for i, c in ipairs(a) do k[i] = ColorSequenceKeypoint.new((i-1)/(#a-1), c) end
+		return ColorSequence.new(k)
+	end
+
+	local MUT_THEME = {
+		Normal      = { bar = Color3.fromRGB(86,94,116),   txt = Color3.fromRGB(110,118,137) },
+		Gold        = { bar = Color3.fromRGB(245,197,66),  txt = Color3.fromRGB(245,197,66),  glow=true },
+		Diamond     = { bar = Color3.fromRGB(94,194,255),  txt = Color3.fromRGB(94,194,255),  glow=true },
+		Rainbow     = { txt = Color3.fromRGB(255,138,138), glow=true, grad=cs(Color3.fromRGB(255,93,93),Color3.fromRGB(245,197,66),Color3.fromRGB(61,220,132),Color3.fromRGB(91,145,255),Color3.fromRGB(199,125,255)) },
+		Bloodrot    = { bar = Color3.fromRGB(224,36,52),   txt = Color3.fromRGB(224,36,52),   glow=true },
+		Candy       = { bar = Color3.fromRGB(255,122,209), txt = Color3.fromRGB(255,122,209), glow=true },
+		Lava        = { txt = Color3.fromRGB(255,122,24),  glow=true, grad=cs(Color3.fromRGB(255,216,107),Color3.fromRGB(255,122,24),Color3.fromRGB(224,36,52)) },
+		Galaxy      = { txt = Color3.fromRGB(199,125,255), glow=true, grad=cs(Color3.fromRGB(123,77,255),Color3.fromRGB(199,125,255),Color3.fromRGB(61,123,255)) },
+		["Yin-Yang"]= { txt = Color3.fromRGB(207,211,220), grad=cs(Color3.new(1,1,1),Color3.new(1,1,1),Color3.fromRGB(17,17,17),Color3.fromRGB(17,17,17)) },
+		Radioactive = { bar = Color3.fromRGB(124,252,0),   txt = Color3.fromRGB(124,252,0),   glow=true },
+		Cursed      = { txt = Color3.fromRGB(255,77,77),   glow=true, grad=cs(Color3.fromRGB(17,17,17),Color3.fromRGB(224,36,52)) },
+		Divine      = { txt = Color3.fromRGB(255,228,94),  glow=true, grad=cs(Color3.new(1,1,1),Color3.fromRGB(255,228,94)) },
+		Cyber       = { txt = Color3.fromRGB(0,229,255),   glow=true, grad=cs(Color3.fromRGB(0,229,255),Color3.fromRGB(10,15,26)) },
+		Phantom     = { txt = Color3.fromRGB(200,204,214), grad=cs(Color3.fromRGB(231,233,239),Color3.fromRGB(34,34,34)) },
+	}
+	local function mutTheme(m) return MUT_THEME[m] or MUT_THEME.Normal end
+
+	local MUT_TO_NAME = {
+		NONE="Normal", NORMAL="Normal",
+		GOLD="Gold", DIAMOND="Diamond",
+		RAINBOW="Rainbow", GALAXY="Galaxy", CANDY="Candy",
+		CURSED="Cursed", LAVA="Lava", BLOODROT="Bloodrot",
+		DIVINE="Divine", CYBER="Cyber", PHANTOM="Phantom",
+		RADIOACTIVE="Radioactive",
+	}
+
+	local BRAINROTS_RAW = {
+		-- top pinned
+		"Skibidi Toilet","John Pork","Headless Horseman","Meowl","Strawberry Elephant","Spyder Elephant",
+		-- $215M-400M/s
+		"Griffin","Dragon Aquanini","Dragon Gingerini","Hydra Dragon Cannelloni",
+		"Signore Carapace","Dragon Cannelloni","Moby Bros","Love Love Bear","Arcadragon",
+		-- $150M-200M/s
+		"Digi Narwhal","Kraken","La Supreme Combinasion","Elefanto Frigo","Hydra Bunny",
+		"Jelly Moby","Celestial Pegasus","Cerberus","Bumbatron","La Breakfast Combinasion",
+		"Popcuru and Fizzuru","Bunny and Eggy","Rosey and Teddy","Capitano Moby",
+		"Cooki and Milki","Los Secret Combinasionas","Burguro and Fryuro",
+		-- $100M-145M/s
+		"Ketupat Bros","Reinito Sleighito","Fortunu and Cashuru","Los Amigos",
+		"Pizza and Ranch","La Secret Combinasion","Antonio","Pancake and Syrup",
+		"Fishino Clownino","Kalika Bros","Foxini Lanternini","Sammyni Truckini",
+		"Los Sekolahs","Cash or Card","Fragrama and Chocrama","La Casa Boo",
+		-- $50M-95M/s
+		"Los Admins","La Fuse Machine","La Food Combinasion","Duggy Bros","Yetimatic",
+		"S'more Serat","Sammyni Cakini","Boppin Bunny","Spooky and Pumpky",
+		"Cangurato Gelato","Los Hackers","Los Chillis","Ginger Gerat","La Ginger Sekolah",
+		"Capitano Americano","Rubiko and Kubiko","Bearito Cabinito","Sammyni Fattini",
+		"Rubrikiko","Examen Bros","Los Spaghettis","Festive 67","Guest 666",
+		"Quackini Snackini","Queen Bee","Ventoliero Pavonero","Grabatron",
+		"La Summer Grande","Spaghetti Tualetti","Los Tictacs","Cloverat Clapat",
+		"Candini Fluffini","La Easter Grande","Caylusaurus","Steakini Fattini",
+		"Polaroidini","Hopilikalika Hopilikalako","Rosetti Tualetti",
+		"La Anniversary Grande","Garama and Madundung","Nacho Spyder",
+		-- $20M-47.5M/s
+		"Nachorilla","Scorpino Coasterino","Money Money Bros","Gold Gold Gold",
+		"Lavadorito Spinito","Jolly Jolly Sahur","Rico Dinero","Los Tangcitos",
+		"Tirilikalika Tirilikalako","Ketchuru and Musturu","Gym Bros","La Lucky Grande",
+		"La Romantic Grande","Swaggy Bros","Orcaledon","Tictac Sahur","Ketupat Kepat",
+		"Dug dug dug","La Taco Combinasion","Coco and Mango","Tang Tang Keletang",
+		"Abyssaloco","Lovin Rose","Esok Goala","Fragola La La La","Noo my Resume",
+		"Noo my Examen","Honey Honey Bear","Los Tacoritas","Bufalino Boomberino",
+		"Eviledon","Los Primos","Esok Sekolah","La Jolly Grande","Los Puggies",
+		"Sand Sand Sand","Los Mariachis","W or L","Los Cupids","Noodle Noodle Poodle",
+		"Gobblino Uniciclino","Globa Steppa","Tralaledon","Tacoturbo Tacorito",
+		"Tuff Toucan","Mieteteira Bicicleteira","Money Money Reindeer","Chipso and Queso",
+		"Chillin Chili","La Spooky Grande","Bacuru and Egguru","Los Bros",
+		"La Extinct Grande","Los Candies","Los Fruits","Celularcini Viciosini","Los 67",
+		"Capitano Gullini","Los Mobilis","Money Money Puggy","Churrito Bunnito",
+		"Los Hotspotsitos","Los Jolly Combinasionas","Los Spooky Combinasionas",
+		"Frullato Framingo","Cigno Fulgoro",
+		-- $10M-19M/s
+		"Chicleteira Champeona","Peschito Machito","Snailo Clovero","Los Planitos",
+		"Girafini Raftini","DJ Panda","Chicleteira Cupideira","Las Sis","Camera Ramena",
+		"Spinny Hammy","Los Sweethearts","Tacorita Bicicleta","Baskito",
+		"Chicleteira Surfeiteira","Chicleteira Noelteira","Los Combinasionas",
+		"Nuclearo Dinossauro","Bananito","Chimnino","Noo my Gold","Noo my Heart",
+		"Swag Soda","Pogo Pogo Penguin","Mariachi Corazoni","Tacorillo Crocodillo",
+		"Conetto Morsetto","Los 25","La Grande Combinasion",
+		-- $5M-8.5M/s
+		"Los Burritos","Sushi Inu","John Doe","Donkeyturbo Express","67","Noo my Eggs",
+		"Burrito Bat","Los Chicleteiras","Los Mi Gatitos","Ombrello Topolino",
+		"Strawberrita","Rang Ring Bus","Flipa Sandala","Noo my Present","Var Var Var",
+		"Los Nooo My Hotspotsitos","Serafinna Medusella","Arcadopus","Noo my Candy",
+		-- $3M-4.5M/s
+		"Los Quesadillas","Futbolini Skatini","Los Bunitos","Aquarino",
+		"Chicleteirina Bicicleteirina","Granny","Burrito Bandito","Chill Puppy",
+		"Luck Luck Luck Sahur","4th Bros","Flancito","Cupid Hotspot","Brunito Marsito",
+		"Quesadillo Vampiro","Chicleteira Bicicleteira","Eid Eid Eid Sahur","Octoball",
+		"Mi Gatito","Ho Ho Ho Sahur","Los Cornis","Cupid Cupid Sahur",
+		"Bunito Bunito Spinito","Rocketini Frostini","Quesadilla Crocodila",
+		"Pot Pumpkin","Naughty Naughty",
+		-- $2M-2.7M/s
+		"Buho De Volto","Horegini Boom","Ref Ref Ref Sahur","Santa Hotspot",
+		"Pot Hotspot","25","Pirulitoita Bicicleteira","Gelatina Volatina","Glaciator",
+		"Los Sigmas","Bunny Bunny Bunny Sahur","To to to Sahur","Toro Españolo",
+		"Yess My Resume","Telemorte","List List List Sahur","La Sahur Combinasion",
+		-- $1M-1.5M/s
+		"Nooo My Hotspot","Berryno","Bunnyman","Los Jobcitos","Gelato Lumacho",
+		"Cuadramat and Pakrahmatmamat","Craburger","Please my Present",
+		"Easter Easter Easter Sahur","Hippo Golazo","Los Cucarachas",
+		"La Vacca Lepre Lepreino","1x1x1x1","Love Love Love Sahur","Bombardiro Vaccariro",
+		"Perrito Burrito","Graipuss Medussi",
+		-- $315K-999.9K/s
+		"Giftini Spyderini","GOAT","Paradiso Axolottino","Trickolino",
+		"Triplito Tralaleritos","Buntteo","La Vacca Jacko Linterino","Fishboard",
+		"Santteo","Las Vaquitas Saturnitas","Los Karkeritos","Karker Sahur","Los Trios",
+		"Job Job Job Sahur","Frankentteo","Las Tralaleritas","Rocco Disco",
+		"Pumpkini Spyderini","Extinct Matteo","Reindeer Tralala",
+		"La Vacca Prese Presente","La Karkerkar Combinasion","Yess my Examen",
+		"Guerriro Digitale","Boatito Auratito","Zombie Tralala","Los Tralaleritos",
+		"Vulturino Skeletono","Los Tortus","La Cucaracha","Extinct Tralalero",
+		"Los Spyderinis","Agarrini la Palini","Chachechi","Blackhole Goat","Dul Dul Dul",
+		"Torrtuginni Dragonfrutini","Trenostruzzo Turbo 4000","Sammyni Spyderini",
+		"Bisonte Giuppitere","Karkerkar Kurkur","La Vacca Saturno Saturnita",
+		"Los Matteos","Jackorilla",
+		-- extra legacy entries (kept for older whitelist saves)
+		"Headless Horseman","John Pork","Meowl","Skibidi Toilet","Strawberry Elephant",
+		"Noobini Pizzanini","Lirili Larila","Tim Cheese","Fluriflura","Talpa Di Fero",
+		"Svinina Bombardino","Pipi Kiwi","Trippi Troppi","Tung Tung Tung Sahur",
+		"Gangster Footera","Bandito Bobritto","Boneca Ambalabu","Cacto Hipopotamo",
+		"Ti Ti Ti Sahur","Bombardiro Crocodilo","Bombombini Gusini","Brr Brr Patapim",
+		"Trulimero Trulicina","Glorbo Fruttodrillo","Blueberrinni Octopusini",
+		"Cocofanto Elefanto","Girafa Celestre","Matteo","Tigrullini Watermelini",
+		"Bananita Dolphinita","Penguino Cocosino","Ballerina Cappuccina",
+		"Chimpanzini Bananini","Sigma Boy","Tralalero Tralala","Espresso Signora",
+		"Lerulerulerule","Unclito Samito","Chef Crabracadabra",
+		"Bri Bri Bicus Dicus Bombicus","Los Crocodillitos","Cavallo Virtuoso",
+		"Gorillo Watermellondrillo","Cocosini Mama","Pandaccini Bananini",
+		"Bombardini Tortinii","Te Te Te Sahur","Tipi Topi Taco","Frigo Camelo",
+		"Orcalero Orcala","Tukanno Bananno","Coco Elefanto","Burbaloni Loliloli",
+		"Chimpanzini Spiderini","Ballerino Lololo","Piccione Macchina",
+		"Tigroligre Frutonni","Tractoro Dinosauro","Bombardiere Lucertola",
+		"Zibra Zubra Zibralini","Carloo","Avocadini Guffo","Salamino Penguino",
+		"Cappuccino Assassino","Tralalita Tralala","Spiderini Mafiosi",
+		"Los Bombinitos","Sammyini Spaghettini","Pakrahmatmamat",
+		"Tracoturo Dinosauro","Tortugini Dragonfruitini",
+	}
+	local BRAINROTS = (function()
+		local seen, out = {}, {}
+		for _, n in ipairs(BRAINROTS_RAW) do
+			local lo = n:lower()
+			if not seen[lo] then seen[lo]=true; out[#out+1]=n end
+		end
+		return out
+	end)()
+
+	local F, FM, FB, FBL = Enum.Font.Gotham, Enum.Font.GothamMedium, Enum.Font.GothamBold, Enum.Font.GothamBlack
+
+	local conns = {}
+	local function track(c) if typeof(c)=="RBXScriptConnection" then conns[#conns+1]=c end return c end
+	local function new(cls, props, kids)
+		local i = Instance.new(cls)
+		for k, v in pairs(props or {}) do if k~="Parent" then i[k]=v end end
+		for _, c in ipairs(kids or {}) do c.Parent=i end
+		if props and props.Parent then i.Parent=props.Parent end
+		return i
+	end
+	local function corner(i, r) new("UICorner",{Parent=i,CornerRadius=UDim.new(0,r)}) end
+	local function line(i, col, tr, th) return new("UIStroke",{Parent=i,Color=col or C.Line,Transparency=tr or 0,Thickness=th or 1}) end
+	local function pad(i, l, r, t, b) new("UIPadding",{Parent=i,PaddingLeft=UDim.new(0,l or 0),PaddingRight=UDim.new(0,r or 0),PaddingTop=UDim.new(0,t or 0),PaddingBottom=UDim.new(0,b or 0)}) end
+	local function tw(o, p, t, s, d) local x=TweenService:Create(o,TweenInfo.new(t or 0.16,s or Enum.EasingStyle.Quad,d or Enum.EasingDirection.Out),p); x:Play(); return x end
+	local function hov(i, a, b)
+		track(i.MouseEnter:Connect(function() tw(i,{BackgroundColor3=b}) end))
+		track(i.MouseLeave:Connect(function() tw(i,{BackgroundColor3=a}) end))
+	end
+	local function toggle(parent, init, cb)
+		local t = new("Frame",{Parent=parent,Size=UDim2.fromOffset(34,18),BackgroundColor3=init and C.White or C.Panel2,BorderSizePixel=0}); corner(t,9)
+		local k = new("Frame",{Parent=t,Size=UDim2.fromOffset(12,12),Position=init and UDim2.new(1,-15,0.5,-6) or UDim2.new(0,3,0.5,-6),BackgroundColor3=init and C.Void or Color3.fromRGB(120,120,120),BorderSizePixel=0}); corner(k,6)
+		local st = init
+		local b = new("TextButton",{Parent=t,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Text=""})
+		local function set(v, fire)
+			st=v; tw(t,{BackgroundColor3=v and C.White or C.Panel2},0.2)
+			tw(k,{BackgroundColor3=v and C.Void or Color3.fromRGB(120,120,120)},0.2)
+			tw(k,{Position=v and UDim2.new(1,-15,0.5,-6) or UDim2.new(0,3,0.5,-6)},0.22,Enum.EasingStyle.Back)
+			if fire and cb then cb(v) end
+		end
+		track(b.MouseButton1Click:Connect(function() set(not st,true) end))
+		return { set=function(v) set(v,false) end, get=function() return st end, instance=t }
+	end
+
+	do local old=PlayerGui:FindFirstChild("ShadowNoti"); if old then old:Destroy() end end
+	local gui = new("ScreenGui",{Parent=PlayerGui,Name="ShadowNoti",ResetOnSpawn=false,IgnoreGuiInset=true,DisplayOrder=60})
+
+	local W, H   = 700, 520
+	local RAIL   = 64
+	local HEAD   = 52
+	local CTRL   = 54
+
+	local wrap = new("Frame",{Parent=gui,AnchorPoint=Vector2.new(0.5,0.5),
+		Position=UDim2.new(0.5,tonumber(Config.WNPosX) or 0,0.5,tonumber(Config.WNPosY) or 0),
+		Size=UDim2.fromOffset(W,H),BackgroundTransparency=1})
+	local function savePos()
+		Config.WNPosX=wrap.Position.X.Offset; Config.WNPosY=wrap.Position.Y.Offset; SaveConfig()
+	end
+
+	local shadows = {}
+	for _, s in ipairs({{14,0.78,6}}) do
+		shadows[#shadows+1]=new("ImageLabel",{Parent=wrap,AnchorPoint=Vector2.new(0.5,0.5),
+			Position=UDim2.new(0.5,0,0.5,s[3]),Size=UDim2.new(1,s[1],1,s[1]),BackgroundTransparency=1,
+			Image="rbxassetid://6014261993",ImageColor3=C.Void,ImageTransparency=s[2],
+			ScaleType=Enum.ScaleType.Slice,SliceCenter=Rect.new(49,49,450,450),ZIndex=0})
+	end
+
+	local root = new("Frame",{Parent=wrap,Size=UDim2.fromScale(1,1),BackgroundColor3=C.Canvas,BorderSizePixel=0,ClipsDescendants=true})
+	corner(root,20)
+	new("UIGradient",{Parent=root,Rotation=90,Color=ColorSequence.new(Color3.fromRGB(11,11,11),Color3.fromRGB(4,4,4))})
+
+	local edge = new("Frame",{Parent=wrap,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,ZIndex=80})
+	corner(edge,20); line(edge,C.Line,0.5,1)
+
+	----------------------------------------------------------------
+	-- ICON RAIL (sidebar nav)
+	----------------------------------------------------------------
+	local rail = new("Frame",{Parent=root,Size=UDim2.new(0,RAIL,1,0),BackgroundColor3=C.Rail,BorderSizePixel=0}); corner(rail,20)
+	new("Frame",{Parent=rail,AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),Size=UDim2.new(0,20,1,0),BackgroundColor3=C.Rail,BorderSizePixel=0})
+	new("Frame",{Parent=rail,AnchorPoint=Vector2.new(1,0),Position=UDim2.fromScale(1,0),Size=UDim2.new(0,1,1,0),BackgroundColor3=C.Line,BorderSizePixel=0})
+
+	local railLogo=new("Frame",{Parent=rail,AnchorPoint=Vector2.new(0.5,0),Position=UDim2.new(0.5,0,0,14),
+		Size=UDim2.fromOffset(38,38),BackgroundColor3=C.White,BorderSizePixel=0}); corner(railLogo,11)
+	new("UIGradient",{Parent=railLogo,Rotation=135,Color=ColorSequence.new(Color3.new(1,1,1),Color3.fromRGB(150,150,150))})
+	new("TextLabel",{Parent=railLogo,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Font=FBL,Text="S",TextSize=18,TextColor3=C.Void})
+
+	-- monogram nav icons: guaranteed to render (no external asset, no fiddly vector geometry)
+	local NAV = {"Feed","Whitelist","Settings","Users"}
+	local NAV_LETTER = {Feed="F",Whitelist="W",Settings="S",Users="U"}
+	local railHolder=new("Frame",{Parent=rail,Position=UDim2.fromOffset(0,66),Size=UDim2.new(1,0,1,-130),BackgroundTransparency=1})
+	new("UIListLayout",{Parent=railHolder,Padding=UDim.new(0,6),HorizontalAlignment=Enum.HorizontalAlignment.Center,SortOrder=Enum.SortOrder.LayoutOrder})
+	local railBtns={}
+	for i,name in ipairs(NAV) do
+		local b=new("TextButton",{Parent=railHolder,Size=UDim2.fromOffset(42,42),BackgroundColor3=C.Panel2,
+			BackgroundTransparency=1,AutoButtonColor=false,Text="",BorderSizePixel=0,LayoutOrder=i}); corner(b,12)
+		local ind=new("Frame",{Parent=b,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,-13,0.5,0),
+			Size=UDim2.fromOffset(3,0),BackgroundColor3=C.White,BorderSizePixel=0}); corner(ind,2)
+		local ic=new("TextLabel",{Parent=b,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),
+			Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Font=FBL,Text=NAV_LETTER[name],TextSize=16,TextColor3=C.Mut})
+		railBtns[name]={btn=b,ind=ind,parts={ic}}
+	end
+
+	----------------------------------------------------------------
+	-- MAIN COLUMN
+	----------------------------------------------------------------
+	local col = new("Frame",{Parent=root,Position=UDim2.fromOffset(RAIL,0),Size=UDim2.new(1,-RAIL,1,0),BackgroundTransparency=1})
+
+	----------------------------------------------------------------
+	-- HEADER
+	----------------------------------------------------------------
+	local head = new("Frame",{Parent=col,Size=UDim2.new(1,0,0,HEAD),BackgroundTransparency=1})
+	new("Frame",{Parent=head,AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),Size=UDim2.new(1,0,0,1),BackgroundColor3=C.Line,BorderSizePixel=0})
+	new("TextLabel",{Parent=head,Position=UDim2.fromOffset(18,8),Size=UDim2.fromOffset(200,20),
+		BackgroundTransparency=1,Font=FB,Text="Shadow Noti",TextSize=16,TextColor3=C.Text,TextXAlignment=Enum.TextXAlignment.Left})
+	new("TextLabel",{Parent=head,Position=UDim2.fromOffset(19,29),Size=UDim2.fromOffset(200,12),
+		BackgroundTransparency=1,Font=FB,Text="AUTO  FINDER",TextSize=9,TextColor3=C.Mut,TextXAlignment=Enum.TextXAlignment.Left})
+
+	-- WS status: "WS" label + dot + colored state text (no pill background)
+	local Orange = Color3.fromRGB(240, 158, 66)
+	local wsChip=new("Frame",{Parent=head,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-98,0.5,0),
+		Size=UDim2.fromOffset(74,20),BackgroundTransparency=1})
+	new("TextLabel",{Parent=wsChip,Position=UDim2.fromOffset(0,0),Size=UDim2.fromOffset(22,20),
+		BackgroundTransparency=1,Font=FB,Text="WS",TextSize=11,TextColor3=C.Sub,TextXAlignment=Enum.TextXAlignment.Left})
+	local wsDot=new("Frame",{Parent=wsChip,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,28,0.5,0),
+		Size=UDim2.fromOffset(7,7),BackgroundColor3=Orange,BorderSizePixel=0}); corner(wsDot,4)
+	local wsLbl=new("TextLabel",{Parent=wsChip,Position=UDim2.fromOffset(38,1),Size=UDim2.new(1,-38,1,-1),
+		BackgroundTransparency=1,Font=FB,Text="Connecting...",TextSize=11,TextColor3=Orange,
+		TextXAlignment=Enum.TextXAlignment.Left,TextYAlignment=Enum.TextYAlignment.Center})
+	local detectLbl=new("TextLabel",{Parent=head,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-172,0.5,0),
+		Size=UDim2.fromOffset(70,18),BackgroundTransparency=1,Font=FM,Text="0 detected",TextSize=11,TextColor3=C.Mut,TextXAlignment=Enum.TextXAlignment.Right,Visible=false})
+
+	_G.WNSetWS = function(ok)
+		local col = ok and C.Mint or C.Rose
+		wsDot.BackgroundColor3 = col
+		wsLbl.Text              = ok and "Live" or "Offline"
+		wsLbl.TextColor3        = col
+	end
+	track(_spawn(function() while gui.Parent do
+		tw(wsDot,{BackgroundTransparency=0.6},0.9,Enum.EasingStyle.Sine); _tw(0.9)
+		tw(wsDot,{BackgroundTransparency=0},0.9,Enum.EasingStyle.Sine); _tw(0.9)
+	end end))
+
+	local function cbtn(sym, xo, hcol)
+		local b=new("TextButton",{Parent=head,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,xo,0.5,0),
+			Size=UDim2.fromOffset(27,27),BackgroundColor3=C.Panel,AutoButtonColor=false,Font=FB,
+			Text=sym,TextSize=13,TextColor3=C.Sub,BorderSizePixel=0}); corner(b,8); line(b,C.LineLo,0,1)
+		track(b.MouseEnter:Connect(function() tw(b,{BackgroundColor3=hcol,TextColor3=C.Text}) end))
+		track(b.MouseLeave:Connect(function() tw(b,{BackgroundColor3=C.Panel,TextColor3=C.Sub}) end))
+		return b
+	end
+	local closeBtn = cbtn("\u{00D7}",-16,C.Rose)
+	local minBtn   = cbtn("\u{2013}",-50,C.Panel2)
+
+	----------------------------------------------------------------
+	-- CONTROL ROW
+	----------------------------------------------------------------
+	local ctrlRow=new("Frame",{Parent=col,Position=UDim2.fromOffset(0,HEAD),Size=UDim2.new(1,0,0,CTRL),BackgroundTransparency=1})
+	new("Frame",{Parent=ctrlRow,AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),
+		Size=UDim2.new(1,0,0,1),BackgroundColor3=C.Line,BorderSizePixel=0})
+	pad(ctrlRow,16,16,0,0)
+
+	new("TextLabel",{Parent=ctrlRow,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,0,0.5,0),
+		Size=UDim2.fromOffset(70,18),BackgroundTransparency=1,Font=FB,Text="MIN FARM",
+		TextSize=10.5,TextColor3=C.Mut,TextXAlignment=Enum.TextXAlignment.Left})
+	Config.WNMinFarm=Config.WNMinFarm or "50M"
+	local minChip=new("Frame",{Parent=ctrlRow,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,74,0.5,0),
+		Size=UDim2.fromOffset(64,30),BackgroundColor3=C.Well,BorderSizePixel=0}); corner(minChip,8); line(minChip,C.Line,0,1)
+	local minBox=new("TextBox",{Parent=minChip,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,
+		Text=Config.WNMinFarm,TextColor3=C.Text,Font=FB,TextSize=12,ClearTextOnFocus=false,TextXAlignment=Enum.TextXAlignment.Center})
+	track(minBox.FocusLost:Connect(function() Config.WNMinFarm=minBox.Text; SaveConfig() end))
+
+	local liveRows, lastId, wsFailCount = {}, 0, 0
+	local activeRows = {}
+
+	local function cpill(label, xo, init, withDot, baseBg, baseStroke, baseTxt, cb)
+		local pw=math.floor(#label*6.6+(withDot and 30 or 22))
+		local b=new("TextButton",{Parent=ctrlRow,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,xo,0.5,0),
+			Size=UDim2.fromOffset(pw,30),BackgroundColor3=baseBg,AutoButtonColor=false,Text="",BorderSizePixel=0})
+		corner(b,8); line(b,baseStroke,0,1)
+		local lblX=11; local dot
+		if withDot then
+			dot=new("Frame",{Parent=b,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,11,0.5,0),
+				Size=UDim2.fromOffset(6,6),BackgroundColor3=init and C.Mint or C.Faint,BorderSizePixel=0}); corner(dot,3)
+			lblX=22; local on=init
+			track(b.MouseButton1Click:Connect(function() on=not on; tw(dot,{BackgroundColor3=on and C.Mint or C.Faint}); if cb then cb(on) end end))
+		else
+			track(b.MouseButton1Click:Connect(function() if cb then cb() end end))
+		end
+		new("TextLabel",{Parent=b,Position=UDim2.fromOffset(lblX,0),Size=UDim2.new(1,-lblX-8,1,0),
+			BackgroundTransparency=1,Font=FB,Text=label,TextSize=11,TextColor3=baseTxt,TextXAlignment=Enum.TextXAlignment.Left})
+		return pw, dot
+	end
+
+	-- right-aligned, right to left: Clear, Cancel, [gap], Autojoin, Duels
+	if Config.WNAutoJoin==nil then Config.WNAutoJoin=true end
+	if Config.WNDuels==nil then Config.WNDuels=false end
+	local clearW=new("TextButton",{Parent=ctrlRow,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,0,0.5,0),
+		Size=UDim2.fromOffset(58,30),BackgroundColor3=C.White,AutoButtonColor=false,Font=FBL,Text="Clear",
+		TextSize=11.5,TextColor3=C.Void,BorderSizePixel=0}); corner(clearW,8)
+	track(clearW.MouseEnter:Connect(function() tw(clearW,{BackgroundColor3=C.WDim}) end))
+	track(clearW.MouseLeave:Connect(function() tw(clearW,{BackgroundColor3=C.White}) end))
+	track(clearW.MouseButton1Click:Connect(function()
+		tw(clearW,{BackgroundColor3=C.WDim},0.08); _delay(0.3,function() tw(clearW,{BackgroundColor3=C.White}) end)
+		for _, e in pairs(activeRows) do e.frame:Destroy() end
+		activeRows={}; liveRows={}
+		detectLbl.Text="0 detected"
+	end))
+	local cancelW = cpill("Cancel",-66,false,false,Color3.fromRGB(40,16,16),Color3.fromRGB(80,32,32),C.Rose,function()
+		if _G.ShadowNotiCancel then pcall(_G.ShadowNotiCancel) end
+	end)
+	local GAP=20
+	local dW  = cpill("Duels",-(66+cancelW+8+GAP),Config.WNDuels,true,C.Panel,C.LineLo,C.Sub,function(v) Config.WNDuels=v; SaveConfig() end)
+	local ajOnState=Config.WNAutoJoin
+	local _,ajDot=cpill("Autojoin",-(66+cancelW+8+GAP+dW+8),Config.WNAutoJoin,true,C.Panel2,C.Line,C.Text,function(v) ajOnState=v; Config.WNAutoJoin=v; SaveConfig() end)
+
+	----------------------------------------------------------------
+	-- BODY
+	----------------------------------------------------------------
+	local bodyTop = HEAD+CTRL
+	local body=new("Frame",{Parent=col,Position=UDim2.fromOffset(0,bodyTop),Size=UDim2.new(1,0,1,-bodyTop),BackgroundTransparency=1})
+	local pages={}
+	local function page() return new("Frame",{Parent=body,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Visible=false}) end
+
+	local function mkInput(parent, ph)
+		local b=new("TextBox",{Parent=parent,BackgroundColor3=C.Well,PlaceholderText=ph,PlaceholderColor3=C.Mut,
+			Text="",TextColor3=C.Text,Font=F,TextSize=12.5,ClearTextOnFocus=false,BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Left})
+		corner(b,8); local st=line(b,C.Line,0,1); pad(b,12,12,0,0)
+		track(b.Focused:Connect(function() tw(st,{Color=C.Blue}) end))
+		track(b.FocusLost:Connect(function() tw(st,{Color=C.Line}) end))
+		return b
+	end
+
+	----------------------------------------------------------------
+	-- FEED PAGE
+	----------------------------------------------------------------
+	local feedPage=page(); pages.Feed=feedPage
+	local SROW=48
+	local srow=new("Frame",{Parent=feedPage,Position=UDim2.fromOffset(0,0),Size=UDim2.new(1,0,0,SROW),BackgroundTransparency=1})
+	new("Frame",{Parent=srow,AnchorPoint=Vector2.new(0,1),Position=UDim2.fromScale(0,1),Size=UDim2.new(1,0,0,1),BackgroundColor3=C.LineLo,BorderSizePixel=0})
+	pad(srow,16,16,0,0)
+	local feedSearchBox=new("TextBox",{Parent=srow,Position=UDim2.fromOffset(0,SROW/2-16),Size=UDim2.new(1,-96,0,32),
+		BackgroundColor3=C.Well,PlaceholderText="Search brainrots...",PlaceholderColor3=C.Mut,Text="",
+		TextColor3=C.Text,Font=F,TextSize=12.5,ClearTextOnFocus=false,BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Left})
+	corner(feedSearchBox,9); local fsS=line(feedSearchBox,C.Line,0,1); pad(feedSearchBox,14,12,0,0)
+	track(feedSearchBox.Focused:Connect(function() tw(fsS,{Color=C.White}) end))
+	track(feedSearchBox.FocusLost:Connect(function() tw(fsS,{Color=C.Line}) end))
+	local rejoinBtn=new("TextButton",{Parent=srow,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,0,0.5,0),
+		Size=UDim2.fromOffset(86,32),BackgroundColor3=C.White,AutoButtonColor=false,Font=FBL,Text="Rejoin",
+		TextSize=12,TextColor3=C.Void,BorderSizePixel=0}); corner(rejoinBtn,9)
+	track(rejoinBtn.MouseEnter:Connect(function() tw(rejoinBtn,{BackgroundColor3=C.WDim}) end))
+	track(rejoinBtn.MouseLeave:Connect(function() tw(rejoinBtn,{BackgroundColor3=C.White}) end))
+	track(rejoinBtn.MouseButton1Click:Connect(function()
+		pcall(function() TeleportService:Teleport(PLACE_ID,LP) end)
+	end))
+	track(feedSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+		local q=feedSearchBox.Text:lower()
+		for _,e in pairs(activeRows) do e.frame.Visible=(q=="" or (e.data.name or ""):lower():find(q,1,true)~=nil) end
+	end))
+
+	local colHead=new("Frame",{Parent=feedPage,Position=UDim2.fromOffset(0,SROW),Size=UDim2.new(1,0,0,24),BackgroundTransparency=1})
+	pad(colHead,16,16,0,0)
+	new("TextLabel",{Parent=colHead,Position=UDim2.fromOffset(0,0),Size=UDim2.fromOffset(60,24),
+		BackgroundTransparency=1,Font=FBL,Text="ELAPSED",TextSize=10,TextColor3=C.Sub,TextXAlignment=Enum.TextXAlignment.Left})
+	new("TextLabel",{Parent=colHead,Position=UDim2.fromOffset(64,0),Size=UDim2.fromOffset(200,24),
+		BackgroundTransparency=1,Font=FBL,Text="BRAINROT NAME",TextSize=10,TextColor3=C.Sub,TextXAlignment=Enum.TextXAlignment.Left})
+	new("TextLabel",{Parent=colHead,AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-144,0,0),Size=UDim2.fromOffset(104,24),
+		BackgroundTransparency=1,Font=FBL,Text="GENERATION",TextSize=10,TextColor3=C.Sub,TextXAlignment=Enum.TextXAlignment.Right})
+	local list=new("ScrollingFrame",{Parent=feedPage,Position=UDim2.fromOffset(0,SROW+22),Size=UDim2.new(1,0,1,-(SROW+22)),BackgroundTransparency=1,
+		BorderSizePixel=0,ScrollBarThickness=4,ScrollBarImageColor3=C.Line,
+		CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+	new("UIListLayout",{Parent=list,Padding=UDim.new(0,3),SortOrder=Enum.SortOrder.LayoutOrder})
+	pad(list,8,8,2,8)
+	-- empty state
+	local emptyFrame=new("Frame",{Parent=feedPage,AnchorPoint=Vector2.new(0.5,0.5),
+		Position=UDim2.fromScale(0.5,0.42),Size=UDim2.fromOffset(300,160),BackgroundTransparency=1,Visible=true})
+
+	-- scanner icon: ring + pulsing inner dot
+	local iconWrap=new("Frame",{Parent=emptyFrame,AnchorPoint=Vector2.new(0.5,0),Position=UDim2.new(0.5,0,0,0),
+		Size=UDim2.fromOffset(56,56),BackgroundColor3=C.Panel,BorderSizePixel=0}); corner(iconWrap,16); line(iconWrap,C.LineLo,0,1)
+	local eDot=new("Frame",{Parent=iconWrap,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),
+		Size=UDim2.fromOffset(10,10),BackgroundColor3=C.Blue,BorderSizePixel=0}); corner(eDot,5)
+	local ePulse=new("Frame",{Parent=iconWrap,AnchorPoint=Vector2.new(0.5,0.5),Position=UDim2.fromScale(0.5,0.5),
+		Size=UDim2.fromOffset(10,10),BackgroundTransparency=1,BorderSizePixel=0}); corner(ePulse,20)
+	local ePulseStroke=line(ePulse,C.Blue,0.3,1.5)
+	track(_spawn(function() while gui.Parent do
+		if emptyFrame.Visible then
+			ePulse.Size=UDim2.fromOffset(10,10); ePulseStroke.Transparency=0.2
+			tw(ePulse,{Size=UDim2.fromOffset(42,42)},1.4,Enum.EasingStyle.Quad)
+			tw(ePulseStroke,{Transparency=1},1.4,Enum.EasingStyle.Quad)
+		end; _tw(1.4)
+	end end))
+
+	new("TextLabel",{Parent=emptyFrame,AnchorPoint=Vector2.new(0.5,0),Position=UDim2.new(0.5,0,0,68),
+		Size=UDim2.fromOffset(300,24),BackgroundTransparency=1,Font=FB,Text="Waiting for scanner",
+		TextSize=16,TextColor3=C.Sub,TextXAlignment=Enum.TextXAlignment.Center})
+	new("TextLabel",{Parent=emptyFrame,AnchorPoint=Vector2.new(0.5,0),Position=UDim2.new(0.5,0,0,96),
+		Size=UDim2.fromOffset(280,32),BackgroundTransparency=1,Font=FM,
+		Text="Finds drop here the moment the relay picks one up.",
+		TextSize=12,TextColor3=C.Faint,TextXAlignment=Enum.TextXAlignment.Center,TextWrapped=true})
+
+	local emptyLbl=emptyFrame -- alias used by WNSetRows visibility toggle
+
+	----------------------------------------------------------------
+	-- WHITELIST PAGE
+	----------------------------------------------------------------
+	local wlPage=page(); pages.Whitelist=wlPage
+	pad(wlPage,12,12,8,0)
+	local wSearch=mkInput(wlPage,"Search whitelist..."); wSearch.Size=UDim2.new(1,-156,0,32)
+	local wAll=new("TextButton",{Parent=wlPage,AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,-80,0,0),
+		Size=UDim2.fromOffset(74,32),BackgroundColor3=C.Panel,AutoButtonColor=false,Font=FB,Text="Enable all",
+		TextSize=11,TextColor3=C.Text,BorderSizePixel=0}); corner(wAll,8); line(wAll,C.Line,0,1); hov(wAll,C.Panel,C.Panel2)
+	local wNone=new("TextButton",{Parent=wlPage,AnchorPoint=Vector2.new(1,0),Position=UDim2.new(1,0,0,0),
+		Size=UDim2.fromOffset(74,32),BackgroundColor3=C.Panel,AutoButtonColor=false,Font=FB,Text="Clear",
+		TextSize=11,TextColor3=C.Text,BorderSizePixel=0}); corner(wNone,8); line(wNone,C.Line,0,1); hov(wNone,C.Panel,C.Panel2)
+	local wCount=new("TextLabel",{Parent=wlPage,Position=UDim2.fromOffset(2,38),Size=UDim2.new(1,-4,0,16),
+		BackgroundTransparency=1,Font=FM,Text="",TextSize=11,TextColor3=C.Faint,TextXAlignment=Enum.TextXAlignment.Left})
+	local wList=new("ScrollingFrame",{Parent=wlPage,Position=UDim2.fromOffset(0,58),Size=UDim2.new(1,0,1,-74),
+		BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=5,ScrollBarImageColor3=C.Line,
+		CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+	new("UIListLayout",{Parent=wList,Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder})
+	pad(wList,0,6,2,8)
+
+	Config.WNWhitelist=Config.WNWhitelist or {}
+	local function wlData(n) Config.WNWhitelist[n]=Config.WNWhitelist[n] or {on=false,num=""}; return Config.WNWhitelist[n] end
+	local function fmtWlNum(raw)
+		local n=tonumber(raw); if not n or n<=0 then return "" end
+		if n>=1e9 then return string.format("%.0fB",n/1e9)
+		elseif n>=1e6 then return string.format("%.0fM",n/1e6) end
+		return tostring(math.floor(n))
+	end
+	local wlRows={}
+	local function refreshWlCount()
+		local on=0; for _,d in pairs(Config.WNWhitelist) do if d.on then on=on+1 end end
+		wCount.Text=on.." of "..#BRAINROTS.." enabled"
+	end
+	for i, n in ipairs(BRAINROTS) do
+		local d=wlData(n)
+		local row=new("Frame",{Parent=wList,Size=UDim2.new(1,0,0,44),BackgroundColor3=C.Panel,BorderSizePixel=0,LayoutOrder=i})
+		corner(row,8); line(row,C.LineLo,0,1); hov(row,C.Panel,C.Panel2)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(14,0),Size=UDim2.new(1,-142,1,0),
+			BackgroundTransparency=1,Font=FM,Text=n,TextSize=12.5,TextColor3=C.Text,
+			TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+		local nb=new("TextBox",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-56,0.5,0),
+			Size=UDim2.fromOffset(48,26),BackgroundColor3=C.Well,PlaceholderText="\u{2014}",PlaceholderColor3=C.Faint,
+			Text=fmtWlNum(d.num),TextColor3=C.Blue,Font=FB,TextSize=11,ClearTextOnFocus=false,
+			BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Center}); corner(nb,7); line(nb,C.Line,0,1)
+		track(nb.FocusLost:Connect(function()
+			local raw=(nb.Text or ""):match("^%s*(%d+%.?%d*)") or ""
+			local n=tonumber(raw)
+			if n and n>0 then
+				local stored=math.floor(n*1e6)
+				d.num=tostring(stored); nb.Text=fmtWlNum(tostring(stored))
+			else d.num=""; nb.Text="" end
+			SaveConfig()
+		end))
+		local tg=toggle(row,d.on,function(s) d.on=s; SaveConfig(); refreshWlCount() end)
+		tg.instance.AnchorPoint=Vector2.new(1,0.5); tg.instance.Position=UDim2.new(1,-10,0.5,0)
+		wlRows[n]={row=row,setT=tg.set,setN=function(v) nb.Text=v; d.num=v end,data=function() return d end}
+	end
+	refreshWlCount()
+	track(wSearch:GetPropertyChangedSignal("Text"):Connect(function()
+		local q=wSearch.Text:lower(); for n,r in pairs(wlRows) do r.row.Visible=(q=="" or n:lower():find(q,1,true)~=nil) end
+	end))
+	track(wAll.MouseButton1Click:Connect(function()
+		tw(wAll,{BackgroundColor3=C.Mint},0.1); _delay(0.28,function() tw(wAll,{BackgroundColor3=C.Panel}) end)
+		for _,r in pairs(wlRows) do if r.row.Visible then r.data().on=true; r.setT(true) end end; SaveConfig(); refreshWlCount()
+	end))
+	track(wNone.MouseButton1Click:Connect(function()
+		tw(wNone,{BackgroundColor3=C.Rose},0.1); _delay(0.28,function() tw(wNone,{BackgroundColor3=C.Panel}) end)
+		for _,r in pairs(wlRows) do if r.row.Visible then r.data().on=false; r.setT(false) end end; SaveConfig(); refreshWlCount()
+	end))
+
+	----------------------------------------------------------------
+	-- SETTINGS PAGE
+	----------------------------------------------------------------
+	local cfgPage=page(); pages.Settings=cfgPage
+	pad(cfgPage,12,12,4,0)
+	local cfgScroll=new("ScrollingFrame",{Parent=cfgPage,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,
+		BorderSizePixel=0,ScrollBarThickness=4,ScrollBarImageColor3=C.Line,
+		CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+	new("UIListLayout",{Parent=cfgScroll,Padding=UDim.new(0,8),SortOrder=Enum.SortOrder.LayoutOrder})
+	pad(cfgScroll,0,6,2,16)
+
+	local function cfgLabel(o, t)
+		local l=new("TextLabel",{Parent=cfgScroll,Size=UDim2.new(1,0,0,22),BackgroundTransparency=1,
+			Font=FBL,Text=string.upper(t),TextSize=10,TextColor3=C.Mut,TextXAlignment=Enum.TextXAlignment.Left,LayoutOrder=o})
+		pad(l,2,0,8,0)
+	end
+	local function cfgStepper(order, txt, key, def, lo, hi, step, suffix)
+		Config[key]=tonumber(Config[key]) or def
+		local row=new("Frame",{Parent=cfgScroll,Size=UDim2.new(1,0,0,50),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order}); corner(row,9); line(row,C.LineLo,0,1); hov(row,C.Panel,C.Panel2)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(14,0),Size=UDim2.new(1,-160,1,0),
+			BackgroundTransparency=1,Font=FM,Text=txt,TextSize=12.5,TextColor3=C.Text,
+			TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+		local box=new("TextBox",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-48,0.5,0),
+			Size=UDim2.fromOffset(60,30),BackgroundColor3=C.Well,Text=tostring(Config[key])..(suffix or ""),
+			TextColor3=C.Blue,Font=FB,TextSize=12.5,ClearTextOnFocus=true,BorderSizePixel=0,
+			TextXAlignment=Enum.TextXAlignment.Center}); corner(box,8); line(box,C.Line,0,1)
+		local function setv(v) v=math.clamp(v,lo,hi); Config[key]=v; box.Text=tostring(v)..(suffix or ""); SaveConfig() end
+		local minus=new("TextButton",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-114,0.5,0),
+			Size=UDim2.fromOffset(28,30),BackgroundColor3=C.Well,AutoButtonColor=false,Font=FB,
+			Text="\u{2212}",TextSize=16,TextColor3=C.Text,BorderSizePixel=0}); corner(minus,8); line(minus,C.Line,0,1)
+		local plus=new("TextButton",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-12,0.5,0),
+			Size=UDim2.fromOffset(28,30),BackgroundColor3=C.White,AutoButtonColor=false,Font=FB,
+			Text="+",TextSize=16,TextColor3=C.Void,BorderSizePixel=0}); corner(plus,8)
+		track(minus.MouseButton1Click:Connect(function() setv(Config[key]-step) end))
+		track(plus.MouseButton1Click:Connect(function() setv(Config[key]+step) end))
+		hov(minus,C.Well,C.Panel2)
+		track(plus.MouseEnter:Connect(function() tw(plus,{BackgroundColor3=C.WDim}) end))
+		track(plus.MouseLeave:Connect(function() tw(plus,{BackgroundColor3=C.White}) end))
+		track(box.FocusLost:Connect(function() local nv=tonumber((box.Text:gsub("[^%d%.]+",""))); if nv then setv(nv) else box.Text=tostring(Config[key])..(suffix or "") end end))
+	end
+	local function cfgToggle(order, txt, key, def)
+		if Config[key]==nil then Config[key]=def end
+		local row=new("Frame",{Parent=cfgScroll,Size=UDim2.new(1,0,0,50),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order}); corner(row,9); line(row,C.LineLo,0,1); hov(row,C.Panel,C.Panel2)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(14,0),Size=UDim2.new(1,-58,1,0),
+			BackgroundTransparency=1,Font=FM,Text=txt,TextSize=12.5,TextColor3=C.Text,
+			TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+		local tg=toggle(row,Config[key]==true,function(s) Config[key]=s; SaveConfig() end)
+		tg.instance.AnchorPoint=Vector2.new(1,0.5); tg.instance.Position=UDim2.new(1,-10,0.5,0)
+	end
+	local function cfgToggleInput(order, txt, tkey, ikey, def, ph)
+		if Config[tkey]==nil then Config[tkey]=def end; Config[ikey]=Config[ikey] or ""
+		local row=new("Frame",{Parent=cfgScroll,Size=UDim2.new(1,0,0,50),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order}); corner(row,9); line(row,C.LineLo,0,1); hov(row,C.Panel,C.Panel2)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(14,0),Size=UDim2.fromOffset(110,50),
+			BackgroundTransparency=1,Font=FM,Text=txt,TextSize=12.5,TextColor3=C.Text,TextXAlignment=Enum.TextXAlignment.Left})
+		local tg=toggle(row,Config[tkey]==true,function(s) Config[tkey]=s; SaveConfig() end)
+		tg.instance.AnchorPoint=Vector2.new(1,0.5); tg.instance.Position=UDim2.new(1,-10,0.5,0)
+		local box=new("TextBox",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-64,0.5,0),
+			Size=UDim2.fromOffset(108,28),BackgroundColor3=C.Well,Text=Config[ikey],PlaceholderText=ph or "",
+			PlaceholderColor3=C.Faint,TextColor3=C.Blue,Font=FM,TextSize=11.5,ClearTextOnFocus=false,
+			BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Center}); corner(box,8); local bs=line(box,C.Line,0,1)
+		track(box.Focused:Connect(function() tw(bs,{Color=C.Blue}) end))
+		track(box.FocusLost:Connect(function() tw(bs,{Color=C.Line}); Config[ikey]=(box.Text:gsub("%D","")); box.Text=Config[ikey]; SaveConfig() end))
+	end
+
+	local listeningKeybind=nil
+	local function cfgKeybind(order, label, key, def)
+		if Config[key]==nil or Config[key]=="" then Config[key]=def end
+		local row=new("Frame",{Parent=cfgScroll,Size=UDim2.new(1,0,0,50),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order}); corner(row,9); line(row,C.LineLo,0,1); hov(row,C.Panel,C.Panel2)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(14,0),Size=UDim2.new(1,-110,1,0),
+			BackgroundTransparency=1,Font=FM,Text=label,TextSize=12.5,TextColor3=C.Text,TextXAlignment=Enum.TextXAlignment.Left})
+		local chip=new("TextButton",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-10,0.5,0),
+			Size=UDim2.fromOffset(94,30),BackgroundColor3=C.Well,AutoButtonColor=false,Text="",BorderSizePixel=0})
+		corner(chip,8); local bs=line(chip,C.Line,0,1)
+		local chipLbl=new("TextLabel",{Parent=chip,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Font=FB,
+			Text=Config[key],TextSize=11,TextColor3=C.Blue,TextXAlignment=Enum.TextXAlignment.Center})
+		track(chip.MouseButton1Click:Connect(function()
+			if listeningKeybind then return end
+			listeningKeybind=key
+			chipLbl.Text="..."; chipLbl.TextColor3=C.White; tw(bs,{Color=C.Blue})
+			local conn
+			conn=UIS.InputBegan:Connect(function(input,gpe)
+				if input.UserInputType~=Enum.UserInputType.Keyboard then return end
+				conn:Disconnect(); listeningKeybind=nil
+				Config[key]=input.KeyCode.Name
+				chipLbl.Text=Config[key]; chipLbl.TextColor3=C.Blue; tw(bs,{Color=C.Line})
+				SaveConfig()
+			end)
+		end))
+	end
+
+	local function cfgConfigExport(order)
+		local row=new("Frame",{Parent=cfgScroll,Size=UDim2.new(1,0,0,50),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order}); corner(row,9); line(row,C.LineLo,0,1)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(14,0),Size=UDim2.new(1,-110,1,0),
+			BackgroundTransparency=1,Font=FM,Text="Export config to clipboard",TextSize=12.5,TextColor3=C.Text,TextXAlignment=Enum.TextXAlignment.Left})
+		local btn=new("TextButton",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-10,0.5,0),
+			Size=UDim2.fromOffset(94,30),BackgroundColor3=C.White,AutoButtonColor=false,Font=FB,
+			Text="Export",TextSize=12,TextColor3=C.Void,BorderSizePixel=0}); corner(btn,8); hov(btn,C.White,C.WDim)
+		track(btn.MouseButton1Click:Connect(function()
+			local ok,json=pcall(function() return HttpService:JSONEncode(Config) end)
+			if not ok then btn.Text="Error"; _delay(1.2,function() btn.Text="Export" end); return end
+			if setclipboard then
+				pcall(setclipboard,json)
+				btn.Text="Copied!"
+			else
+				btn.Text="No clipboard"
+			end
+			_delay(1.2,function() btn.Text="Export" end)
+		end))
+	end
+
+	local function cfgConfigImport(order)
+		local row=new("Frame",{Parent=cfgScroll,Size=UDim2.new(1,0,0,50),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order}); corner(row,9); line(row,C.LineLo,0,1)
+		local box=new("TextBox",{Parent=row,Position=UDim2.fromOffset(10,10),Size=UDim2.new(1,-114,1,-20),
+			BackgroundColor3=C.Well,Text="",PlaceholderText="Paste shared config here…",
+			PlaceholderColor3=C.Faint,TextColor3=C.Blue,Font=FM,TextSize=11,ClearTextOnFocus=false,
+			BorderSizePixel=0,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+		corner(box,8); local bs=line(box,C.Line,0,1)
+		track(box.Focused:Connect(function() tw(bs,{Color=C.Blue}) end))
+		track(box.FocusLost:Connect(function() tw(bs,{Color=C.Line}) end))
+		local btn=new("TextButton",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-10,0.5,0),
+			Size=UDim2.fromOffset(94,30),BackgroundColor3=C.White,AutoButtonColor=false,Font=FB,
+			Text="Import",TextSize=12,TextColor3=C.Void,BorderSizePixel=0}); corner(btn,8); hov(btn,C.White,C.WDim)
+		track(btn.MouseButton1Click:Connect(function()
+			local ok,data=pcall(function() return HttpService:JSONDecode(box.Text) end)
+			if not ok or type(data)~="table" then
+				btn.Text="Bad config"; _delay(1.2,function() btn.Text="Import" end); return
+			end
+			for k,v in pairs(data) do Config[k]=v end
+			SaveConfig()
+			btn.Text="Imported! Reopen panel"
+			_delay(1.6,function() btn.Text="Import" end)
+			box.Text=""
+		end))
+	end
+
+	cfgLabel(1,"Joining")
+	cfgStepper(2,"Join delay (ms)","WNJoinSpeed",250,0,5000,50,"")
+	cfgStepper(3,"Join retries","WNJoinRetries",3,1,20,1,"")
+	cfgLabel(4,"Notifications")
+	cfgToggleInput(5,"Sound on log","WNSoundOnLog","WNSoundId",true,"Sound ID")
+	cfgLabel(6,"Interface")
+	cfgToggle(7,"Auto collapse on load","WNAutoCollapse",false)
+	cfgLabel(8,"Keybinds")
+	cfgKeybind(9,"Open / Close panel","WNToggleKeybind","RightShift")
+	cfgKeybind(10,"Toggle AutoJoin","WNAutoJoinKeybind","G")
+	cfgLabel(11,"Config")
+	cfgConfigExport(12)
+	cfgConfigImport(13)
+
+	----------------------------------------------------------------
+	-- SHADOW USER ESP
+	----------------------------------------------------------------
+	local ESP_COLOR = Color3.fromRGB(79,216,158)
+	local espData = {}
+	local function clearESP(uid)
+		local e = espData[uid]
+		if not e then return end
+		for _,c in ipairs(e.conns) do pcall(function() c:Disconnect() end) end
+		if e.highlight then pcall(function() e.highlight:Destroy() end) end
+		if e.billboard then pcall(function() e.billboard:Destroy() end) end
+		espData[uid] = nil
+	end
+	local function applyESPToChar(char, entry)
+		local hl = Instance.new("Highlight")
+		hl.FillColor = ESP_COLOR
+		hl.FillTransparency = 0.7
+		hl.OutlineColor = ESP_COLOR
+		hl.OutlineTransparency = 0
+		hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		hl.Parent = char
+		entry.highlight = hl
+		local head = char:FindFirstChild("Head") or char:WaitForChild("Head",4)
+		if not head then return end
+		local bb = Instance.new("BillboardGui")
+		bb.Name = "ShadowUserTag"
+		bb.Size = UDim2.fromOffset(170,40)
+		bb.StudsOffset = Vector3.new(0,2.6,0)
+		bb.AlwaysOnTop = true
+		bb.Parent = head
+		local lbl = Instance.new("TextLabel")
+		lbl.Size = UDim2.fromScale(1,1)
+		lbl.BackgroundTransparency = 1
+		lbl.Font = Enum.Font.GothamBlack
+		lbl.Text = "SHADOW USER"
+		lbl.TextSize = 18
+		lbl.TextColor3 = ESP_COLOR
+		lbl.TextStrokeTransparency = 0.35
+		lbl.TextStrokeColor3 = Color3.new(0,0,0)
+		lbl.Parent = bb
+		entry.billboard = bb
+	end
+	local function applyESP(uid, plr)
+		clearESP(uid)
+		local entry = {conns={}}
+		espData[uid] = entry
+		if plr.Character then applyESPToChar(plr.Character, entry) end
+		entry.conns[#entry.conns+1] = track(plr.CharacterAdded:Connect(function(char)
+			applyESPToChar(char, entry)
+		end))
+	end
+	track(Players.PlayerRemoving:Connect(function(plr) clearESP(tostring(plr.UserId)) end))
+
+	----------------------------------------------------------------
+	-- USERS PAGE
+	----------------------------------------------------------------
+	local usersPage=page(); pages.Users=usersPage
+	pad(usersPage,12,12,8,0)
+	local uList=new("ScrollingFrame",{Parent=usersPage,Size=UDim2.fromScale(1,1),BackgroundTransparency=1,
+		BorderSizePixel=0,ScrollBarThickness=4,ScrollBarImageColor3=C.Line,
+		CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y})
+	new("UIListLayout",{Parent=uList,Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
+	pad(uList,0,6,2,8)
+	local userRows={}
+	local function addUser(id, nm, online, order)
+		local row=new("Frame",{Parent=uList,Size=UDim2.new(1,0,0,54),BackgroundColor3=C.Panel,
+			BorderSizePixel=0,LayoutOrder=order or 0}); corner(row,10); line(row,C.LineLo,0,1); hov(row,C.Panel,C.Panel2)
+		local av=new("ImageLabel",{Parent=row,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,14,0.5,0),
+			Size=UDim2.fromOffset(36,36),BackgroundColor3=C.Well,BorderSizePixel=0}); corner(av,18)
+		line(av,online and C.Blue or C.Faint,0.15,2)
+		_spawn(function() local ok,url=pcall(function() return Players:GetUserThumbnailAsync(id,Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size48x48) end)
+			if ok and url and av.Parent then av.Image=url end end)
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(58,9),Size=UDim2.new(1,-134,0,18),
+			BackgroundTransparency=1,Font=FB,Text=nm,TextSize=13,TextColor3=C.Text,
+			TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+		new("TextLabel",{Parent=row,Position=UDim2.fromOffset(58,28),Size=UDim2.new(1,-134,0,14),
+			BackgroundTransparency=1,Font=FM,Text="@"..nm,TextSize=11,TextColor3=C.Faint,
+			TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd})
+		local pill2=new("Frame",{Parent=row,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-10,0.5,0),
+			Size=UDim2.fromOffset(72,24),BackgroundColor3=online and Color3.fromRGB(18,28,50) or C.Well,BorderSizePixel=0}); corner(pill2,12)
+		local pdot=new("Frame",{Parent=pill2,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,10,0.5,0),
+			Size=UDim2.fromOffset(6,6),BackgroundColor3=online and C.Blue or C.Faint,BorderSizePixel=0}); corner(pdot,3)
+		new("TextLabel",{Parent=pill2,Position=UDim2.fromOffset(22,0),Size=UDim2.new(1,-22,1,0),
+			BackgroundTransparency=1,Font=FB,Text=online and "online" or "offline",TextSize=11,
+			TextColor3=online and C.BlueHi or C.Faint,TextXAlignment=Enum.TextXAlignment.Left})
+		return row
+	end
+	local function refreshUsers(rows)
+		local hasLP=false
+		for _,u in ipairs(rows) do if tostring(u.user_id)==tostring(LP.UserId) then hasLP=true; break end end
+		if not hasLP then table.insert(rows,1,{user_id=LP.UserId,display_name=LP.DisplayName,username=LP.Name}) end
+		local lpUid=tostring(LP.UserId)
+		for uid,r in pairs(userRows) do
+			local present=(uid==lpUid)
+			if not present then for _,u in ipairs(rows) do if tostring(u.user_id)==uid then present=true; break end end end
+			if not present then r:Destroy(); userRows[uid]=nil; clearESP(uid) end
+		end
+		for i,u in ipairs(rows) do
+			local uid=tostring(u.user_id); local nm=u.display_name or u.username or "User"
+			if userRows[uid] then userRows[uid].LayoutOrder=i
+			else userRows[uid]=addUser(u.user_id,nm,true,i) end
+			if not espData[uid] then
+				local plr = Players:GetPlayerByUserId(tonumber(uid))
+				if plr then applyESP(uid, plr) end
+			end
+		end
+	end
+	_G.WNSetUsers=refreshUsers
+	refreshUsers({{user_id=LP.UserId,display_name=LP.DisplayName,username=LP.Name}})
+
+	----------------------------------------------------------------
+	-- NAV
+	----------------------------------------------------------------
+	local function setIconColor(r,col)
+		for _,p in ipairs(r.parts) do
+			if p:IsA("UIStroke") then tw(p,{Color=col})
+			elseif p:IsA("TextLabel") then tw(p,{TextColor3=col})
+			else tw(p,{BackgroundColor3=col}) end
+		end
+	end
+	local activeTab
+	local function setTab(key)
+		activeTab=key
+		for k,p in pairs(pages) do
+			if k==key then p.Visible=true; p.Position=UDim2.fromOffset(0,6); tw(p,{Position=UDim2.fromOffset(0,0)},0.2,Enum.EasingStyle.Quint)
+			else p.Visible=false end
+		end
+		for k,r in pairs(railBtns) do
+			local active=(k==key)
+			tw(r.btn,{BackgroundTransparency=active and 0 or 1},0.16)
+			r.btn.BackgroundColor3 = active and C.Panel2 or C.Panel
+			setIconColor(r, active and C.White or C.Mut)
+			tw(r.ind,{Size=UDim2.fromOffset(3,active and 20 or 0)},0.2,Enum.EasingStyle.Back)
+		end
+	end
+	for k,r in pairs(railBtns) do
+		track(r.btn.MouseButton1Click:Connect(function() if activeTab~=k then setTab(k) end end))
+		track(r.btn.MouseEnter:Connect(function() if activeTab~=k then tw(r.btn,{BackgroundTransparency=0}); r.btn.BackgroundColor3=C.Panel; setIconColor(r,C.Sub) end end))
+		track(r.btn.MouseLeave:Connect(function() if activeTab~=k then tw(r.btn,{BackgroundTransparency=1}); setIconColor(r,C.Mut) end end))
+	end
+
+	----------------------------------------------------------------
+	-- DRAG
+	----------------------------------------------------------------
+	local function dragFrom(handle)
+		local dragging,ds,sp
+		track(handle.InputBegan:Connect(function(i)
+			if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+				dragging=true; ds=i.Position; sp=wrap.Position end end))
+		track(UIS.InputChanged:Connect(function(i)
+			if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+				local d=i.Position-ds; wrap.Position=UDim2.new(sp.X.Scale,sp.X.Offset+d.X,sp.Y.Scale,sp.Y.Offset+d.Y) end end))
+		track(UIS.InputEnded:Connect(function(i)
+			if (i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch) and dragging then
+				dragging=false; savePos() end end))
+	end
+	dragFrom(root)
+
+	local setMin
+
+	----------------------------------------------------------------
+	-- PILL
+	----------------------------------------------------------------
+	local PILL_W,PILL_H=240,44
+	local pill=new("Frame",{Parent=wrap,Size=UDim2.fromScale(1,1),BackgroundColor3=C.Canvas,
+		BorderSizePixel=0,Visible=false,ZIndex=60}); corner(pill,14)
+	new("UIGradient",{Parent=pill,Rotation=90,Color=ColorSequence.new(Color3.fromRGB(16,19,30),Color3.fromRGB(11,14,22))})
+	line(pill,C.Line,0.1,1)
+	local pillAccent=new("Frame",{Parent=pill,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,14,0.5,0),
+		Size=UDim2.fromOffset(8,8),BackgroundColor3=C.Blue,BorderSizePixel=0,ZIndex=61}); corner(pillAccent,3)
+	new("UIGradient",{Parent=pillAccent,Rotation=135,Color=ColorSequence.new(C.BlueHi,C.BlueLo)})
+	new("TextLabel",{Parent=pill,AnchorPoint=Vector2.new(0,0.5),Position=UDim2.new(0,28,0.5,0),
+		Size=UDim2.fromOffset(150,20),BackgroundTransparency=1,Font=FBL,Text="Shadow Noti",
+		TextSize=13,TextColor3=C.Text,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=61})
+	local pillDot=new("Frame",{Parent=pill,AnchorPoint=Vector2.new(1,0.5),Position=UDim2.new(1,-14,0.5,0),
+		Size=UDim2.fromOffset(8,8),BackgroundColor3=C.Mint,BorderSizePixel=0,ZIndex=61}); corner(pillDot,4)
+	track(_spawn(function() while pill.Parent do
+		if pill.Visible then tw(pillDot,{BackgroundTransparency=0.5},0.9,Enum.EasingStyle.Sine) end; _tw(0.9)
+		if pill.Visible then tw(pillDot,{BackgroundTransparency=0},0.9,Enum.EasingStyle.Sine) end; _tw(0.9)
+	end end))
+	do local dragging,moved,ds,sp
+		track(pill.InputBegan:Connect(function(i)
+			if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+				dragging=true; moved=false; ds=i.Position; sp=wrap.Position end end))
+		track(UIS.InputChanged:Connect(function(i)
+			if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+				local d=i.Position-ds; if d.Magnitude>4 then moved=true end
+				wrap.Position=UDim2.new(sp.X.Scale,sp.X.Offset+d.X,sp.Y.Scale,sp.Y.Offset+d.Y) end end))
+		track(UIS.InputEnded:Connect(function(i)
+			if (i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch) and dragging then
+				dragging=false; if not moved then setMin(false,false) else savePos() end end end))
+	end
+
+	----------------------------------------------------------------
+	-- MINIMIZE / CLOSE
+	----------------------------------------------------------------
+	local minimized=false
+	setMin=function(state,instant)
+		minimized=state; local dur=instant and 0 or 0.24
+		if minimized then
+			body.Visible=false; root.Visible=false; edge.Visible=false; pill.Visible=true
+			for _,sh in ipairs(shadows) do sh.Visible=false end
+			tw(wrap,{Size=UDim2.fromOffset(PILL_W,PILL_H)},dur,Enum.EasingStyle.Quint)
+		else
+			pill.Visible=false
+			for _,sh in ipairs(shadows) do sh.Visible=true end
+			root.Visible=true; edge.Visible=true
+			tw(wrap,{Size=UDim2.fromOffset(W,H)},dur,Enum.EasingStyle.Quint)
+			_delay(instant and 0 or 0.1,function() body.Visible=true end)
+		end
+		minBtn.Text=minimized and "\u{25A1}" or "\u{2013}"
+	end
+	track(minBtn.MouseButton1Click:Connect(function() setMin(not minimized,false) end))
+	track(closeBtn.MouseButton1Click:Connect(function()
+		for uid in pairs(espData) do clearESP(uid) end
+		for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+		tw(wrap,{Size=UDim2.fromOffset(W-30,H-30)},0.18); tw(root,{BackgroundTransparency=1},0.18)
+		_tw(0.18); gui:Destroy()
+	end))
+
+	-- keybinds
+	track(UIS.InputBegan:Connect(function(input,gpe)
+		if gpe then return end
+		if input.KeyCode==(Enum.KeyCode[Config.WNToggleKeybind or ""] or Enum.KeyCode.RightShift) then
+			setMin(not minimized,false)
+		elseif input.KeyCode==(Enum.KeyCode[Config.WNAutoJoinKeybind or ""] or Enum.KeyCode.G) then
+			ajOnState=not ajOnState; Config.WNAutoJoin=ajOnState; SaveConfig()
+			if ajDot then tw(ajDot,{BackgroundColor3=ajOnState and C.Mint or C.Faint}) end
+		end
+	end))
+
+	----------------------------------------------------------------
+	-- SOUND
+	----------------------------------------------------------------
+	local DEFAULT_SOUND="9046615797"; local _logSound
+	local function playLogSound()
+		if Config.WNSoundOnLog==false then return end
+		local id=tostring(Config.WNSoundId or ""):gsub("%D",""); if id=="" then id=DEFAULT_SOUND end
+		pcall(function()
+			if not _logSound then _logSound=Instance.new("Sound"); _logSound.Volume=0.5; _logSound.Parent=SoundService end
+			_logSound.SoundId="rbxassetid://"..id; _logSound.TimePosition=0; _logSound:Play()
+		end)
+	end
+
+	----------------------------------------------------------------
+	-- JOIN LOGIC
+	----------------------------------------------------------------
+	local pendingJoin=nil
+	track(TeleportService.TeleportInitFailed:Connect(function(player,result,errMsg)
+		if player~=LP or not pendingJoin then return end
+		local job=pendingJoin; pendingJoin=nil; job.onFail(result,errMsg)
+	end))
+	local function joinServer(jobId,setStatus)
+		if not jobId or jobId=="" then setStatus("No job",true); return end
+		local retries=math.max(1,Config.WNJoinRetries or 3)
+		local function attempt(n,useJobId)
+			setStatus(n<retries and ("Retry "..(retries-n+1)) or "...",false)
+			local watchdog
+			local job={onFail=function(result,errMsg)
+				if watchdog then _cancel(watchdog) end
+				if n>1 then _tw(0.6); attempt(n-1,useJobId)
+				elseif useJobId then attempt(retries,false)
+				else setStatus("Full",true) end
+			end}
+			pendingJoin=job
+			local ok,err=pcall(function()
+				if useJobId then TeleportService:TeleportToPlaceInstance(PLACE_ID,jobId,LP)
+				else TeleportService:Teleport(PLACE_ID,LP) end
+			end)
+			if not ok then pendingJoin=nil; job.onFail("pcall",err); return end
+			watchdog=_delay(4,function()
+				if pendingJoin==job then pendingJoin=nil; job.onFail("Timeout","no TeleportInitFailed") end
+			end)
+		end
+		attempt(retries,true)
+	end
+
+	-- spam join: rapid-fire teleport attempts until _G.ShadowNotiCancel fires
+	local spamActive=false
+	local function spamJoin(jobId,setStatus)
+		if not jobId or jobId=="" then return end
+		spamActive=true
+		_G.ShadowNotiCancel=function() spamActive=false end
+		_spawn(function()
+			local i=0; local maxAttempts=Config.WNMaxSpam or 0
+			while spamActive and (maxAttempts==0 or i<maxAttempts) do
+				i=i+1; setStatus("Spam "..i,false)
+				pcall(function() TeleportService:TeleportToPlaceInstance(PLACE_ID,jobId,LP) end)
+				_tw((Config.WNJoinSpeed or 300)/1000)
+			end
+			spamActive=false; setStatus("Spam Join",true)
+		end)
+	end
+
+	----------------------------------------------------------------
+	-- FEED ROW (Skibidi style: mutation bar + gradient)
+	----------------------------------------------------------------
+	local _suppressSound=false
+
+	local function parseGen(s)
+		if type(s)~="string" then return 0 end
+		local n=tonumber(s:match("[%d%.]+")) or 0; local suf=s:match("[KkMmBbTt]"); local m=1
+		if suf then suf=suf:upper(); m=(suf=="K" and 1e3) or (suf=="M" and 1e6) or (suf=="B" and 1e9) or (suf=="T" and 1e12) or 1 end
+		return n*m
+	end
+
+	local function buildRow(d, animate)
+		local theme  = mutTheme(d.mut or d.rarity or "Normal")
+		local glowCol= theme.txt or C.Blue
+		local hasGlow= theme.glow == true
+
+		-- row base
+		local row=new("Frame",{Size=UDim2.new(1,0,0,50),BackgroundColor3=Color3.fromRGB(20,20,24),BorderSizePixel=0,
+			LayoutOrder=d.order or 0,ClipsDescendants=true}); corner(row,8)
+
+		-- left colour wash — mutation colour fades to transparent going right
+		if hasGlow then
+			local wash=new("Frame",{Parent=row,ZIndex=1,Position=UDim2.fromOffset(0,0),
+				Size=UDim2.new(0,110,1,0),BackgroundColor3=glowCol,BorderSizePixel=0})
+			new("UIGradient",{Parent=wash,
+				Transparency=NumberSequence.new({NumberSequenceKeypoint.new(0,0.80),NumberSequenceKeypoint.new(1,1)})})
+		end
+
+		-- accent bar (left edge, thin, full inner height)
+		local bar=new("Frame",{Parent=row,ZIndex=2,Position=UDim2.fromOffset(8,10),
+			Size=UDim2.new(0,3,1,-20),BackgroundColor3=theme.bar or glowCol,BorderSizePixel=0}); corner(bar,2)
+		if theme.grad then new("UIGradient",{Parent=bar,Rotation=90,Color=theme.grad}) end
+
+		-- elapsed time
+		local elapsedLbl=new("TextLabel",{Parent=row,ZIndex=3,Position=UDim2.fromOffset(16,0),
+			Size=UDim2.fromOffset(36,50),BackgroundTransparency=1,Font=FM,Text="0s",TextSize=10.5,
+			TextColor3=C.Mut,TextXAlignment=Enum.TextXAlignment.Left})
+
+		-- name + mutation pill row
+		local nameRow=new("Frame",{Parent=row,ZIndex=2,Position=UDim2.fromOffset(56,0),
+			Size=UDim2.new(1,-222,1,0),BackgroundTransparency=1})
+		new("UIListLayout",{Parent=nameRow,FillDirection=Enum.FillDirection.Horizontal,Padding=UDim.new(0,6),
+			VerticalAlignment=Enum.VerticalAlignment.Center,SortOrder=Enum.SortOrder.LayoutOrder})
+
+		local nameTxt=d.name or "Unknown"
+		new("TextLabel",{Parent=nameRow,ZIndex=3,
+			Size=UDim2.fromOffset(math.min(math.floor(#nameTxt*7.2)+4,204),20),
+			BackgroundTransparency=1,Font=FBL,Text=nameTxt,TextSize=13,TextColor3=C.Text,
+			TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,LayoutOrder=1})
+
+		local mutTxt=d.mut or d.rarity or "Normal"
+		if mutTxt~="Normal" then
+			-- pill badge: subtle tinted bg + coloured text
+			local pillW=math.floor(#mutTxt*6.2)+14
+			local pill=new("Frame",{Parent=nameRow,ZIndex=3,Size=UDim2.fromOffset(pillW,18),
+				BackgroundColor3=glowCol,BackgroundTransparency=0.80,BorderSizePixel=0,LayoutOrder=2}); corner(pill,5)
+			local mutLbl=new("TextLabel",{Parent=pill,ZIndex=4,Size=UDim2.new(1,0,1,0),
+				BackgroundTransparency=1,Font=FB,Text=mutTxt,TextSize=10.5,
+				TextColor3=theme.txt or C.Sub,TextXAlignment=Enum.TextXAlignment.Center})
+			if theme.grad then new("UIGradient",{Parent=mutLbl,Color=theme.grad}) end
+		end
+
+		-- generation value
+		new("TextLabel",{Parent=row,ZIndex=3,AnchorPoint=Vector2.new(1,0.5),
+			Position=UDim2.new(1,-148,0.5,0),Size=UDim2.fromOffset(82,20),
+			BackgroundTransparency=1,Font=FBL,Text=d.gen or "--",TextSize=13,
+			TextColor3=C.Mint,TextXAlignment=Enum.TextXAlignment.Right})
+
+		-- join button
+		local join=new("TextButton",{Parent=row,ZIndex=3,AnchorPoint=Vector2.new(1,0.5),
+			Position=UDim2.new(1,-10,0.5,0),Size=UDim2.fromOffset(56,26),
+			BackgroundColor3=Color3.new(1,1,1),AutoButtonColor=false,Font=FBL,
+			Text="Join",TextSize=11.5,TextColor3=Color3.fromRGB(10,12,18),BorderSizePixel=0}); corner(join,7)
+		track(join.MouseEnter:Connect(function() tw(join,{BackgroundColor3=Color3.fromRGB(225,228,235)}) end))
+		track(join.MouseLeave:Connect(function() tw(join,{BackgroundColor3=Color3.new(1,1,1)}) end))
+		track(join.MouseButton1Down:Connect(function() tw(join,{Size=UDim2.fromOffset(52,23)},0.08) end))
+		track(join.MouseButton1Up:Connect(function() tw(join,{Size=UDim2.fromOffset(56,26)},0.12,Enum.EasingStyle.Back) end))
+		track(join.MouseButton1Click:Connect(function()
+			if not d.job_id or d.job_id=="" then return end
+			_spawn(function()
+				_tw((Config.WNJoinSpeed or 250)/1000)
+				joinServer(d.job_id,function(text,isFinal)
+					if not (join and join.Parent) then return end
+					join.Text=text
+					if isFinal then _delay(2,function() if join and join.Parent then join.Text="Join" end end) end
+				end)
+			end)
+		end))
+
+		-- spam button
+		local spam=new("TextButton",{Parent=row,ZIndex=3,AnchorPoint=Vector2.new(1,0.5),
+			Position=UDim2.new(1,-72,0.5,0),Size=UDim2.fromOffset(56,26),
+			BackgroundColor3=Color3.fromRGB(200,44,56),AutoButtonColor=false,Font=FBL,
+			Text="Spam",TextSize=11.5,TextColor3=Color3.new(1,1,1),BorderSizePixel=0}); corner(spam,7)
+		track(spam.MouseEnter:Connect(function() tw(spam,{BackgroundColor3=Color3.fromRGB(220,58,70)}) end))
+		track(spam.MouseLeave:Connect(function() tw(spam,{BackgroundColor3=Color3.fromRGB(200,44,56)}) end))
+		track(spam.MouseButton1Click:Connect(function()
+			if not d.job_id or d.job_id=="" then return end
+			spamJoin(d.job_id,function(text,isFinal)
+				if not (spam and spam.Parent) then return end
+				spam.Text=text
+				if isFinal then _delay(1,function() if spam and spam.Parent then spam.Text="Spam" end end) end
+			end)
+		end))
+
+		track(row.MouseEnter:Connect(function() tw(row,{BackgroundColor3=Color3.fromRGB(26,26,32)}) end))
+		track(row.MouseLeave:Connect(function() tw(row,{BackgroundColor3=Color3.fromRGB(20,20,24)}) end))
+
+		if animate then row.Size=UDim2.new(1,0,0,0); tw(row,{Size=UDim2.new(1,0,0,50)},0.26,Enum.EasingStyle.Quint) end
+		return row, elapsedLbl
+	end
+
+	_spawn(function()
+		while true do
+			_tw(1)
+			for _,e in pairs(activeRows) do
+				if e.frame and e.frame.Parent and e.data.time and e.elapsedLbl then
+					local s=math.floor(os.clock()-e.data.time)
+					e.elapsedLbl.Text = s<60 and (s.."s") or (math.floor(s/60).."m")
+				end
+			end
+		end
+	end)
+
+	local seenCount=0; local lastAutoJoinUid=nil
+	_G.WNSetRows=function(rows)
+		for uid,e in pairs(activeRows) do
+			local present=false
+			for _,d in ipairs(rows) do if d.uid==uid then present=true; break end end
+			if not present then e.frame:Destroy(); activeRows[uid]=nil end
+		end
+		for i,d in ipairs(rows) do
+			d.order=i; d.genNum=parseGen(d.gen)
+			if not activeRows[d.uid] then
+				local f,elbl=buildRow(d,not _suppressSound); f.Parent=list
+				activeRows[d.uid]={frame=f,data=d,elapsedLbl=elbl}
+				seenCount=seenCount+1
+				if not _suppressSound then playLogSound() end
+			else activeRows[d.uid].data=d; activeRows[d.uid].frame.LayoutOrder=i end
+		end
+		local ordered={}; for _,e in pairs(activeRows) do ordered[#ordered+1]=e end
+		table.sort(ordered,function(a,b) return (a.data.genNum or 0)>(b.data.genNum or 0) end)
+		for rank,e in ipairs(ordered) do e.frame.LayoutOrder=rank end
+		local n=0; for _ in pairs(activeRows) do n=n+1 end
+		detectLbl.Text=n.." detected"; emptyLbl.Visible=(n==0)
+
+		if Config.WNAutoJoin and #rows>0 then
+			local top1=rows[1]
+			for _,r in ipairs(rows) do if (r.genNum or 0)>(top1.genNum or 0) then top1=r end end
+			if top1.job_id and top1.job_id~="" and top1.uid~=lastAutoJoinUid then
+				local wl=Config.WNWhitelist and Config.WNWhitelist[top1.name]
+				local minOk=true
+				if wl and wl.num and wl.num~="" then minOk=(top1.genNum or 0)>=(tonumber(wl.num) or 0) end
+				local passWl=true
+				if Config.WNUseWhitelist then
+					passWl = wl and wl.on and minOk
+				end
+				if passWl then
+					lastAutoJoinUid=top1.uid
+					_spawn(function() joinServer(top1.job_id,function() end) end)
+				end
+			end
+		end
+	end
+
+	----------------------------------------------------------------
+	-- SUPABASE POLL
+	----------------------------------------------------------------
+	local function cleanName(raw)
+		local s=tostring(raw or ""):gsub("^[^%a]+",""):gsub("%s*%[.-%]%s*$",""):match("^%s*(.-)%s*$")
+		return (s and s~="") and s or "Unknown"
+	end
+	local function fmtMoney(n)
+		n=tonumber(n) or 0
+		if n>=1e12 then return string.format("%.1fT",n/1e12)
+		elseif n>=1e9 then return string.format("%.1fB",n/1e9)
+		elseif n>=1e6 then return string.format("%.1fM",n/1e6)
+		elseif n>=1e3 then return string.format("%.1fK",n/1e3)
+		else return tostring(math.floor(n)) end
+	end
+
+	_spawn(function()
+		if httpReq then
+			local ok,res=pcall(httpReq,{Url=SB_URL.."/rest/v1/finds?select=id&order=id.desc&limit=1",Method="GET",
+				Headers={["apikey"]=SB_KEY,["Authorization"]="Bearer "..SB_KEY}})
+			if ok and res and tonumber(res.StatusCode)==200 then
+				local ok2,d=pcall(HttpService.JSONDecode,HttpService,res.Body)
+				if ok2 and type(d)=="table" and d[1] then lastId=d[1].id or 0 end
+			end
+		end
+		while true do
+			_tw(0.5)
+			if not httpReq then continue end
+			local url=SB_URL.."/rest/v1/finds?select=*&order=id.asc&limit=20"
+			if lastId>0 then url=url.."&id=gt."..lastId end
+			local ok,res=pcall(httpReq,{Url=url,Method="GET",Headers={["apikey"]=SB_KEY,["Authorization"]="Bearer "..SB_KEY}})
+			if not ok or not res or tonumber(res.StatusCode)~=200 then
+				wsFailCount = wsFailCount + 1
+				if wsFailCount >= 2 then _G.WNSetWS(false) end
+				continue
+			end
+			wsFailCount = 0
+			_G.WNSetWS(true)
+			local ok2,data=pcall(HttpService.JSONDecode,HttpService,res.Body)
+			if not ok2 or type(data)~="table" then continue end
+			local hit=false
+			for _,raw in ipairs(data) do
+				if (raw.id or 0)>lastId then lastId=raw.id end
+				local ok3,row=pcall(_pdec,raw.payload)
+				if not ok3 or type(row)~="table" then continue end
+				local nm=cleanName(row.name)
+				if nm=="Unknown" or nm=="" then continue end
+				local v=tonumber(row.price) or 0
+				local mutName=MUT_TO_NAME[(row.mutation or "NORMAL"):upper()] or "Normal"
+				table.insert(liveRows,1,{
+					uid=tostring(raw.id),name=nm,
+					mut=mutName,rarity=mutName,
+					gen=fmtMoney(v).."/s",job_id=row.job_id or "",
+					time=os.clock(),genNum=v,
+				})
+				hit=true
+			end
+			if hit then
+				while #liveRows>20 do table.remove(liveRows) end
+				_G.WNSetRows(liveRows)
+			end
+		end
+	end)
+
+	----------------------------------------------------------------
+	-- PRESENCE
+	----------------------------------------------------------------
+	local function upsertPresence()
+		if not httpReq then return end
+		local body=HttpService:JSONEncode({user_id=LP.UserId,username=LP.Name,display_name=LP.DisplayName,last_seen=DateTime.now():ToIsoDate(),plan=verifiedPlan})
+		pcall(httpReq,{Url=SB_URL.."/rest/v1/active_users?on_conflict=user_id",Method="POST",
+			Headers={["apikey"]=SB_KEY,["Authorization"]="Bearer "..SB_KEY,["Content-Type"]="application/json",
+				["Prefer"]="resolution=merge-duplicates,return=minimal"},Body=body})
+	end
+	local function pollActiveUsers()
+		if not httpReq then return end
+		local ok,res=pcall(httpReq,{Url=SB_URL.."/rest/v1/active_users?select=user_id,username,display_name&order=last_seen.desc",Method="GET",
+			Headers={["apikey"]=SB_KEY,["Authorization"]="Bearer "..SB_KEY}})
+		if not ok or not res or res.StatusCode~=200 then return end
+		local ok2,data=pcall(HttpService.JSONDecode,HttpService,res.Body)
+		if ok2 and type(data)=="table" then refreshUsers(data) end
+	end
+	_spawn(function()
+		upsertPresence()
+		pollActiveUsers()
+		while gui.Parent do _tw(30); upsertPresence(); pollActiveUsers() end
+	end)
+
+	----------------------------------------------------------------
+	-- ENTRANCE
+	----------------------------------------------------------------
+	setTab("Feed")
+	root.BackgroundTransparency=1; wrap.Size=UDim2.fromOffset(W-24,H-24)
+	tw(root,{BackgroundTransparency=0},0.28,Enum.EasingStyle.Quint)
+	tw(wrap,{Size=UDim2.fromOffset(W,H)},0.32,Enum.EasingStyle.Back)
+	if Config.WNAutoCollapse==true then _delay(0.5,function() setMin(true,false) end) end
+
+	_G.ShadowNotiGui=gui
+end)
